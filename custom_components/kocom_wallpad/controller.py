@@ -12,7 +12,7 @@ from homeassistant.components.switch import SwitchDeviceClass
 from homeassistant.components.climate.const import (
     PRESET_NONE,
     PRESET_AWAY,
-    FAN_OFF,
+    FAN_LOW,
     HVACMode,
 )
 
@@ -315,7 +315,7 @@ class KocomController:
                 havc_mode = AIRCONDITIONER_HVAC_MAP.get(frame.payload[1], HVACMode.OFF) 
             else:
                 havc_mode = HVACMode.OFF
-            fan_mode = AIRCONDITIONER_FAN_MAP.get(frame.payload[2], FAN_OFF)
+            fan_mode = AIRCONDITIONER_FAN_MAP.get(frame.payload[2], FAN_LOW)
             current_temp = float(frame.payload[4])
             target_temp = float(frame.payload[5])
 
@@ -328,12 +328,9 @@ class KocomController:
             state = {
                 "hvac_mode": havc_mode,
                 "fan_mode": fan_mode,
-                "current_temp": self._device_storage.get("ac_current", current_temp),
-                "target_temp": self._device_storage.get("ac_target", target_temp),
+                "current_temp": current_temp,
+                "target_temp": target_temp,
             }
-            if target_temp != 0 and current_temp != 0:
-                self._device_storage["ac_current"] = current_temp
-                self._device_storage["ac_target"] = target_temp
             dev = DeviceState(key=key, platform=Platform.CLIMATE, attribute=attribute, state=state)
             return dev
     
@@ -702,9 +699,11 @@ class KocomController:
                 data[1] = REV_AC_HVAC_MAP[hm]
         elif action == "set_fan":
             fm = kwargs["fan_mode"]
+            data[0] = 0x10
             data[2] = REV_AC_FAN_MAP[fm]
         elif action == "set_temperature":
             tt = kwargs["target_temp"]
+            data[0] = 0x10
             data[5] = int(tt)
         return data
     

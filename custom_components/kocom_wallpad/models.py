@@ -12,7 +12,6 @@ from homeassistant.components.climate.const import (
     FAN_MEDIUM,
     FAN_HIGH,
     FAN_AUTO,
-    FAN_OFF,
 )
 
 from .const import DeviceType, SubType
@@ -38,7 +37,6 @@ AIRCONDITIONER_HVAC_MAP = {
 }
 
 AIRCONDITIONER_FAN_MAP = {
-    0x00: FAN_OFF,
     0x01: FAN_LOW,
     0x02: FAN_MEDIUM,
     0x03: FAN_HIGH,
