@@ -107,6 +107,19 @@ class KocomController:
     @staticmethod
     def _checksum(buf: bytes) -> int:
         return sum(buf) % 256
+    
+    @staticmethod
+    def _crc16_xmodem(buf: bytes) -> int:
+        crc = 0x0000
+        poly = 0x1021
+        for b in buf:
+            crc ^= (b << 8)
+            for _ in range(8):
+                if crc & 0x8000:
+                    crc = ((crc << 1) & 0xFFFF) ^ poly
+                else:
+                    crc = (crc << 1) & 0xFFFF
+        return crc
 
     def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -114,7 +127,10 @@ class KocomController:
         self._rx_buf.extend(chunk)
         for pkt in self._split_buf():
             LOGGER.debug("Packet received: raw=%s", pkt.hex())
-            self._dispatch_packet(pkt)
+            if self._crc16_xmodem(pkt[2:18]) != int.from_bytes(pkt[17:19], 'big'):            
+                self._dispatch_interphone_packet(pkt)
+            else:
+                self._dispatch_packet(pkt)
 
     def _split_buf(self) -> List[bytes]:
         packets: List[bytes] = []
@@ -139,6 +155,58 @@ class KocomController:
             packets.append(candidate)
             del buf[:PACKET_LEN]
         return packets
+    
+    def _dispatch_interphone_packet(self, packet: bytes) -> None:
+        states: List[DeviceState] = []
+        
+        dest = packet[4]
+        src = packet[5]
+        src2 = packet[11]
+        event = packet[15]
+        event2 = packet[16]
+        
+        is_ringing = event == 0x01 and event2 == 0x01
+        if dest == 0x02 and src == 0x02:
+            entrance_type = "private"
+        else:
+            entrance_type = "public"
+        if src2 not in {0x31, 0xFF}:
+            self._device_storage[f"interphone_{entrance_type}_id"] = src2
+        
+        if event == 0x24 and event == 0x00:
+            key = DeviceKey(
+                device_type=DeviceType.INTERPHONE,
+                room_index=entrance_type,
+                device_index=0,
+                sub_type=SubType.NONE,
+            )
+            dev = DeviceState(key=key, platform=Platform.SWITCH, attribute={}, state=False)
+            states.append(dev)
+        if event == 0x04 and event2 == 0x00:
+            key = DeviceKey(
+                device_type=DeviceType.INTERPHONE,
+                room_index=entrance_type,
+                device_index=0,
+                sub_type=SubType.EXIT,
+            )
+            dev = DeviceState(key=key, platform=Platform.SWITCH, attribute={}, state=False)
+            states.append(dev)
+
+        key = DeviceKey(
+            device_type=DeviceType.INTERPHONE,
+            room_index=entrance_type,
+            device_index=0,
+            sub_type=SubType.RING,
+        )
+        attribute = {
+            "device_class": BinarySensorDeviceClass.SOUND
+        }
+        dev = DeviceState(key=key, platform=Platform.BINARY_SENSOR, attribute=attribute, state=is_ringing)
+        states.append(dev)
+
+        for state in states:
+            state._packet = packet
+            self.gateway.on_device_state(state)
 
     def _dispatch_packet(self, packet: bytes) -> None:
         frame = PacketFrame(packet)
@@ -239,22 +307,22 @@ class KocomController:
                 "hvac_modes": [HVACMode.HEAT, HVACMode.OFF],
                 "feature_preset": True,
                 "preset_modes": [PRESET_AWAY, PRESET_NONE],
-                "temp_step": self._device_storage.get("thermo_step", 1.0),
+                "temp_step": self._device_storage.get(f"{key.unique_id}_thermo_step", 1.0),
             }
             state = {
                 "hvac_mode": havc_mode,
                 "preset_mode": preset_mode,
-                "target_temp": self._device_storage.get("thermo_target", target_temp),
-                "current_temp": self._device_storage.get("thermo_current", current_temp),
+                "target_temp": self._device_storage.get(f"{key.unique_id}_thermo_target", target_temp),
+                "current_temp": self._device_storage.get(f"{key.unique_id}_thermo_current", current_temp),
             }
-            if target_temp % 1 == 0.5 and self._device_storage.get("thermo_step") != 0.5:
+            if target_temp % 1 == 0.5 and self._device_storage.get(f"{key.unique_id}_thermo_step") != 0.5:
                 LOGGER.debug("0.5°C step detected, heating supports 0.5 increments.")
-                self._device_storage["thermo_step"] = 0.5
+                self._device_storage[f"{key.unique_id}_thermo_step"] = 0.5
             if target_temp != 0 and current_temp != 0:
-                if havc_mode == HVACMode.HEAT and self._device_storage.get("thermo_target") != target_temp:
+                if havc_mode == HVACMode.HEAT and self._device_storage.get(f"{key.unique_id}_thermo_target") != target_temp:
                     LOGGER.debug(f"User target temperature update: {target_temp}")
-                    self._device_storage["thermo_target"] = target_temp
-                self._device_storage["thermo_current"] = current_temp
+                    self._device_storage[f"{key.unique_id}_thermo_target"] = target_temp
+                self._device_storage[f"{key.unique_id}_thermo_current"] = current_temp
             dev = DeviceState(key=key, platform=Platform.CLIMATE, attribute=attribute, state=state)
             states.append(dev)
             
@@ -605,6 +673,11 @@ class KocomController:
         if dt == DeviceType.AIRCONDITIONER:
             return self._expect_for_airconditioner(key, action, **kwargs)            
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
+    
+    def generate_interphone_command(self, key: DeviceKey, action: str, **kwargs) -> Tuple[bytes, Predicate, float]:
+        base = bytearray([
+            0xAA, 0x55, 0x79, 0xBC, 
+        ])
 
     def generate_command(self, key: DeviceKey, action: str, **kwargs) -> Tuple[bytes, Predicate, float]:
         device_type = key.device_type

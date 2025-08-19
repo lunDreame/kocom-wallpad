@@ -153,7 +153,14 @@ class KocomGateway:
             raise
 
     async def async_send_action(self, key: DeviceKey, action: str, **kwargs) -> bool:
-        packet, expect_predicate, timeout = self.controller.generate_command(key, action, **kwargs)
+        if key.device_type == DeviceType.INTERPHONE:
+            packet, expect_predicate, timeout = self.controller.generate_interphone_command(
+                key, action, **kwargs
+            )
+        else:
+            packet, expect_predicate, timeout = self.controller.generate_command(
+                key, action, **kwargs
+            )
 
         async with self._send_lock:
             for attempt in range(1, SEND_RETRY_MAX + 1):

@@ -43,6 +43,7 @@ class DeviceType(IntEnum):
     ELEVATOR = 9
     MOTION = 10
     AIRQUALITY = 11
+    INTERPHONE = 12
 
 
 class SubType(IntEnum):
@@ -59,3 +60,5 @@ class SubType(IntEnum):
     VOC = 9
     TEMP = 10
     HUMIDITY = 11
+    EXIT = 12
+    RING = 13

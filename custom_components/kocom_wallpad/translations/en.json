@@ -41,6 +41,12 @@
             },
             "elevator": {
                 "name": "Elevator {id}"
+            },
+            "interphone": {
+                "name": "Intercom {id}"
+            },
+            "interphone-exit": {
+                "name": "Intercom Shutdown {id}"
             }
         },
         "climate": {
@@ -100,6 +106,9 @@
             },
             "ventilation-errcode": {
                 "name": "Ventilation Error Code {id}"
+            },
+            "interphone-ring": {
+                "name": "Intercom Call {id}"
             }
         }
     }

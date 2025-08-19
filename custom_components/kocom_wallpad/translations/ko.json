@@ -41,6 +41,12 @@
             },
             "elevator": {
                 "name": "엘리베이터 {id}"
+            },
+            "interphone": {
+                "name": "인터폰 {id}"
+            },
+            "interphone-exit": {
+                "name": "인터폰 종료 {id}"
             }
         },
         "climate": {
@@ -100,6 +106,9 @@
             },
             "ventilation-errcode": {
                 "name": "환기 오류코드 {id}"
+            },
+            "interphone-ring": {
+                "name": "인터폰 호출 {id}"
             }
         }
     }
