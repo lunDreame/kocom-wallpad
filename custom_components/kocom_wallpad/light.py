@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from homeassistant.components.light import LightEntity, ColorMode
+from homeassistant.components.light import LightEntity, ColorMode, ATTR_BRIGHTNESS
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -59,10 +59,38 @@ class KocomLight(KocomBaseEntity, LightEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._device.state
+        state = self._device.state
+        if isinstance(state, dict):
+            self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+            return state["state"]
+        return state
+    
+    @property
+    def brightness(self) -> int:
+        level = self._device.state["level"]
+        levels = self._device.state["levels"]
+        if not self._device.state["state"]:
+            return 0
+        if levels and level in levels:
+            index = levels.index(level) + 1
+            brightness = round(index * 255 / len(levels))
+        else:
+            brightness = 0
+        return brightness
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.gateway.async_send_action(self._device.key, "turn_on")
+        if ATTR_BRIGHTNESS in kwargs:
+            brightness = kwargs[ATTR_BRIGHTNESS]
+            levels = self._device.state["levels"]
+            step_size = 255 / len(levels)
+            index = round(brightness / step_size)
+            index = min(max(index, 1), len(levels))
+            level = levels[index - 1]
+            args = {"brightness": level}
+            await self.gateway.async_send_action(self._device.key, "set_brightness", **args)
+        else:
+            await self.gateway.async_send_action(self._device.key, "turn_on")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.gateway.async_send_action(self._device.key, "turn_off")

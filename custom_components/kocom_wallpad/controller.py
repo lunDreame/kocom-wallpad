@@ -147,30 +147,28 @@ class KocomController:
             return
 
         dev_state = None
-        if frame.dev_type == DeviceType.LIGHT:
-            if frame.dev_room == 0xFF:
-                dev_state = self._handle_cutoff_switch(frame)
-            else:
+        if frame.packet_type in (0x0B, 0x0D):
+            if frame.dev_type == DeviceType.LIGHT:
                 dev_state = self._handle_switch(frame)
-        elif frame.dev_type == DeviceType.OUTLET:
-            dev_state = self._handle_switch(frame)
-        elif frame.dev_type == DeviceType.THERMOSTAT:
-            dev_state = self._handle_thermostat(frame)
-        elif frame.dev_type == DeviceType.AIRCONDITIONER:
-            dev_state = self._handle_airconditioner(frame)
-        elif frame.dev_type == DeviceType.VENTILATION:
-            dev_state = self._handle_ventilation(frame)
-        elif frame.dev_type == DeviceType.GASVALVE:
-            dev_state = self._handle_gasvalve(frame)
-        elif frame.dev_type == DeviceType.ELEVATOR:
-            dev_state = self._handle_elevator(frame)
-        elif frame.dev_type == DeviceType.MOTION:
-            dev_state = self._handle_motion(frame)
-        elif frame.dev_type == DeviceType.AIRQUALITY:
-            dev_state = self._handle_airquality(frame)
-        else:
-            LOGGER.debug("Unhandled device type: %s (raw=%s)", frame.dev_type.name, frame.raw.hex())
-            return
+            elif frame.dev_type == DeviceType.OUTLET:
+                dev_state = self._handle_switch(frame)
+            elif frame.dev_type == DeviceType.THERMOSTAT:
+                dev_state = self._handle_thermostat(frame)
+            elif frame.dev_type == DeviceType.AIRCONDITIONER:
+                dev_state = self._handle_airconditioner(frame)
+            elif frame.dev_type == DeviceType.VENTILATION:
+                dev_state = self._handle_ventilation(frame)
+            elif frame.dev_type == DeviceType.GASVALVE:
+                dev_state = self._handle_gasvalve(frame)
+            elif frame.dev_type == DeviceType.ELEVATOR:
+                dev_state = self._handle_elevator(frame)
+            elif frame.dev_type == DeviceType.MOTION:
+                dev_state = self._handle_motion(frame)
+            elif frame.dev_type == DeviceType.AIRQUALITY:
+                dev_state = self._handle_airquality(frame)
+        elif frame.packet_type == 0x09:
+            if frame.dev_type == DeviceType.LIGHT:
+                dev_state = self._handle_light_cutoff(frame)
 
         if not dev_state:
             return
@@ -182,11 +180,11 @@ class KocomController:
         else:
             dev_state._packet = packet
             self.gateway.on_device_state(dev_state)
-            
-    def _handle_cutoff_switch(self, frame: PacketFrame) -> DeviceState:
+
+    def _handle_light_cutoff(self, frame: PacketFrame) -> DeviceState:
         if frame.command in (0x65, 0x66):
             key = DeviceKey(
-                device_type=frame.dev_type,
+                device_type=DeviceType.LIGHTCUTOFF,
                 room_index=0,
                 device_index=0,
                 sub_type=SubType.NONE,
@@ -209,9 +207,34 @@ class KocomController:
                 attribute = {}
                 if platform == Platform.SWITCH:
                     attribute = {"device_class": SwitchDeviceClass.OUTLET}
-                state = frame.payload[idx] == 0xFF        
+                state = frame.payload[idx]
+                if state >= 0x01 and state <= 0x09:
+                    if self._device_storage.get(f"{key.unique_id}_dimming_light") is None:
+                        LOGGER.debug(f"unique_id: {key.unique_id} has dimming light detected.")
+                        self._device_storage[f"{key.unique_id}_dimming_light"] = True
+                        self._device_storage[f"{key.unique_id}_dimming_light_levels"] = [state]
+                        self._device_storage[f"{key.unique_id}_dimming_light_max_level"] = 0
+                if self._device_storage.get(f"{key.unique_id}_dimming_light_levels") is not None and state > 0x00:
+                    if self._device_storage[f"{key.unique_id}_dimming_light_max_level"] < state and state != 0xFF:
+                        self._device_storage[f"{key.unique_id}_dimming_light_max_level"] = state
+                    if state == 0xFF:
+                        state = self._device_storage[f"{key.unique_id}_dimming_light_max_level"] + 1
+                    if state not in self._device_storage[f"{key.unique_id}_dimming_light_levels"]:
+                        LOGGER.debug(f"unique_id: {key.unique_id} has dimming light level detected: {state}")
+                        self._device_storage[f"{key.unique_id}_dimming_light_levels"].append(state)
+                if self._device_storage.get(f"{key.unique_id}_dimming_light", False):
+                    dimming_state = {
+                        "state": bool(state > 0x00),
+                        "level": max(
+                            self._device_storage.get(f"{key.unique_id}_dimming_light_levels", [])
+                        ) if state == 0xFF else state,
+                        "levels": sorted(self._device_storage.get(f"{key.unique_id}_dimming_light_levels", []))
+                    }
+                    state = dimming_state
+                else:
+                    state = state == 0xFF
                 dev = DeviceState(key=key, platform=platform, attribute=attribute, state=state)
-                if state:
+                if state or (isinstance(state, dict) and state["state"]):
                     dev._is_register = True
                 else:
                     dev._is_register = False
@@ -250,7 +273,7 @@ class KocomController:
             if target_temp % 1 == 0.5 and self._device_storage.get(f"{key.unique_id}_thermo_step") != 0.5:
                 LOGGER.debug("0.5°C step detected, heating supports 0.5 increments.")
                 self._device_storage[f"{key.unique_id}_thermo_step"] = 0.5
-            if target_temp != 0 and current_temp != 0:
+            if target_temp > 0 and current_temp > 0:
                 if havc_mode == HVACMode.HEAT and self._device_storage.get(f"{key.unique_id}_thermo_target") != target_temp:
                     LOGGER.debug(f"User target temperature update: {target_temp}")
                     self._device_storage[f"{key.unique_id}_thermo_target"] = target_temp
@@ -526,6 +549,9 @@ class KocomController:
             return self._match_key_and(key, _on), CMD_CONFIRM_TIMEOUT
         if action == "turn_off":
             return self._match_key_and(key, _off), CMD_CONFIRM_TIMEOUT
+        if action == "set_brightness":
+            brightness = kwargs["brightness"]
+            return self._match_key_and(key, lambda d: isinstance(d.state, dict) and d.state.get("level") == brightness), CMD_CONFIRM_TIMEOUT
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
 
     def _expect_for_ventilation(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
@@ -594,7 +620,9 @@ class KocomController:
 
     def build_expectation(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
         dt = key.device_type
-        if dt in (DeviceType.LIGHT, DeviceType.LIGHTCUTOFF, DeviceType.OUTLET, DeviceType.ELEVATOR):
+        if dt in (
+            DeviceType.LIGHT, DeviceType.LIGHTCUTOFF, DeviceType.DIMMINGLIGHT, DeviceType.OUTLET, DeviceType.ELEVATOR
+        ):
             return self._expect_for_switch_like(key, action, **kwargs)
         if dt == DeviceType.VENTILATION:
             return self._expect_for_ventilation(key, action, **kwargs)
@@ -609,11 +637,6 @@ class KocomController:
     def generate_command(self, key: DeviceKey, action: str, **kwargs) -> Tuple[bytes, Predicate, float]:
         device_type = key.device_type
         room_index = key.room_index
-        device_index = key.device_index
-        sub_type = key.sub_type
-
-        if device_type not in REV_DT_MAP:
-            raise ValueError(f"Invalid device type: {device_type}")
 
         type_bytes = bytes([0x30, 0xBC])
         padding = bytes([0x00])
@@ -624,8 +647,8 @@ class KocomController:
         command = bytes([0x00])
         data = bytearray(8)
 
-        if device_type in (DeviceType.LIGHT, DeviceType.OUTLET):
-            data = self._generate_switch(key, action, data)
+        if device_type in (DeviceType.LIGHT, DeviceType.DIMMINGLIGHT, DeviceType.OUTLET):
+            data = self._generate_switch(key, action, data, **kwargs)
         elif device_type == DeviceType.VENTILATION:
             data = self._generate_ventilation(action, data, **kwargs)
         elif device_type == DeviceType.THERMOSTAT:
@@ -635,13 +658,17 @@ class KocomController:
         elif device_type == DeviceType.GASVALVE:
             command = bytes([0x02])
         elif device_type == DeviceType.ELEVATOR:
-            dest_dev = bytes([0x01])
-            dest_room = bytes([0x00])
-            src_dev = bytes([0x44])
-            src_room = bytes([room_index & 0xFF])
+            dest_dev, src_dev = src_dev, dest_dev
+            dest_room, src_room = src_room, dest_room
             command = bytes([0x01])
-        else:
-            raise ValueError(f"Invalid device generator: {device_type}")
+        elif device_type == DeviceType.LIGHTCUTOFF:
+            type_bytes = bytes([0x30, 0x9C])
+            dest_room = bytes([0xFF])
+            if action == "turn_on":
+                command = bytes([0x65])
+            else:
+                command = bytes([0x66])
+                data = bytearray([0xFF] * 8)
 
         body = b"".join([type_bytes, padding, dest_dev, dest_room, src_dev, src_room, command, bytes(data)])
         checksum = bytes([self._checksum(body)])
@@ -650,7 +677,7 @@ class KocomController:
         expect, timeout = self.build_expectation(key, action, **kwargs)
         return packet, expect, timeout
 
-    def _generate_switch(self, key: DeviceKey, action: str, data: bytes) -> bytes:
+    def _generate_switch(self, key: DeviceKey, action: str, data: bytes, **kwargs: Any) -> bytes:
         for idx in range(8):
             new_key = replace(key, device_index=idx)
             st = self.gateway.registry.get(new_key)
@@ -658,7 +685,14 @@ class KocomController:
                 bit = 0xFF if (st and st.state is True) else 0x00
                 data[idx] = bit
             else:
-                data[idx] = 0xFF if action == "turn_on" else 0x00
+                if action == "set_brightness":
+                    brightness = kwargs["brightness"]
+                    max_level = max(self._device_storage[f"{key.unique_id}_dimming_light_levels"])
+                    if brightness == max_level:
+                        brightness = 0xFF
+                    data[idx] = brightness
+                else:
+                    data[idx] = 0xFF if action == "turn_on" else 0x00
         return data
 
     def _generate_ventilation(self, action: str, data: bytes, **kwargs: Any) -> bytes:
@@ -706,4 +740,3 @@ class KocomController:
             data[0] = 0x10
             data[5] = int(tt)
         return data
-    
