@@ -18,3 +18,9 @@
 ## Domain Knowledge
 - **Header:** 코콤 패킷은 항상 `0xAA 0x55`로 시작한다.
 - **Checksum:** 마지막 바이트는 이전 바이트들의 합산 결과물이다. (코드 내 검증 로직 필수)
+
+## Documentation & Git Standards
+1. **Comment Language:** 모든 코드 내 주석과 설명은 한국어로 작성한다. (UTF-8 encoding 필수)
+2. **Commit Message:** - 반드시 한국어로 작성한다.
+   - 형식: [타입] 작업내용 (예: [수정] via_device 경고 해결 및 허브 장치 추가)
+3. **Docstrings:** 클래스와 함수의 Docstring은 한국어로 작성하여 가독성을 높인다.
