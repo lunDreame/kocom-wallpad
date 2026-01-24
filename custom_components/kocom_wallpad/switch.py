@@ -1,4 +1,4 @@
-"""Switch platform for Kocom Wallpad."""
+"""코콤 월패드 스위치 플랫폼 (Switch Platform)."""
 
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Kocom switch platform."""
+    """코콤 스위치 플랫폼 설정."""
     gateway: KocomGateway = hass.data[DOMAIN][entry.entry_id]
 
     @callback
     def async_add_switch(devices=None):
-        """Add switch entities."""
+        """스위치 엔티티 추가."""
         if devices is None:
             devices = gateway.get_devices_from_platform(Platform.SWITCH)
 
@@ -48,22 +48,26 @@ async def async_setup_entry(
 
 
 class KocomSwitch(KocomBaseEntity, SwitchEntity):
-    """Representation of a Kocom switch."""
+    """코콤 스위치 엔티티."""
 
     def __init__(self, gateway: KocomGateway, device: DeviceState) -> None:
-        """Initialize the switch."""
+        """스위치 초기화."""
         super().__init__(gateway, device)
         
     @property
     def device_class(self) -> SwitchDeviceClass:
+        """기기 클래스 반환."""
         return self._device.attribute.get("device_class", SwitchDeviceClass.SWITCH)
 
     @property
     def is_on(self) -> bool:
+        """켜짐 여부 반환."""
         return self._device.state
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        """스위치 켜기."""
         await self.gateway.async_send_action(self._device.key, "turn_on")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        """스위치 끄기."""
         await self.gateway.async_send_action(self._device.key, "turn_off")

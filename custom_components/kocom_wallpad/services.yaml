@@ -1,0 +1,10 @@
+send_raw_command:
+  name: Send Raw Command
+  description: Sends a raw hex packet to the Kocom wallpad bus.
+  fields:
+    packet:
+      name: Packet
+      description: The hex string of the packet (e.g. AA55...)
+      required: true
+      selector:
+        text:

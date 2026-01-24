@@ -1,4 +1,4 @@
-"""Models for Kocom Wallpad."""
+"""코콤 월패드 데이터 모델 (Data Models)."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ ELEVATOR_DIRECTION_MAP = {
 
 @dataclass(frozen=True)
 class DeviceKey:
-    """Device key."""
+    """기기 식별자 (Device Key)."""
     device_type: DeviceType
     room_index: int
     device_index: int
@@ -70,16 +70,18 @@ class DeviceKey:
 
     @property
     def unique_id(self) -> str:
+        """고유 ID 문자열 반환."""
         return f"{self.device_type.value}-{self.room_index}_{self.device_index}-{self.sub_type.value}"
 
     @property
     def key(self) -> Tuple[int, int, int, int]:
+        """키 튜플 반환."""
         return (self.device_type.value, self.room_index, self.device_index, self.sub_type.value)
 
 
 @dataclass
 class DeviceState:
-    """Device state."""
+    """기기 상태 (Device State)."""
     key: DeviceKey
     platform: Platform
     attribute: dict[str, Any] 

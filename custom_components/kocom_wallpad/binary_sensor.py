@@ -1,4 +1,4 @@
-"""Binary Sensor platform for Kocom Wallpad."""
+"""코콤 월패드 이진 센서 플랫폼 (Binary Sensor Platform)."""
 
 from __future__ import annotations
 
@@ -26,12 +26,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Kocom binary sensor platform."""
+    """코콤 이진 센서 플랫폼 설정."""
     gateway: KocomGateway = hass.data[DOMAIN][entry.entry_id]
 
     @callback
     def async_add_binary_sensor(devices=None):
-        """Add binary sensor entities."""
+        """이진 센서 엔티티 추가."""
         if devices is None:
             devices = gateway.get_devices_from_platform(Platform.BINARY_SENSOR)
 
@@ -51,21 +51,23 @@ async def async_setup_entry(
     
 
 class KocomBinarySensor(KocomBaseEntity, BinarySensorEntity):
-    """Representation of a Kocom binary sensor."""
+    """코콤 이진 센서 엔티티."""
 
     def __init__(self, gateway: KocomGateway, device: DeviceState) -> None:
-        """Initialize the binary sensor."""
+        """이진 센서 초기화."""
         super().__init__(gateway, device)
 
     @property
     def is_on(self) -> bool:
+        """켜짐 여부 반환."""
         return self._device.state
     
     @property
     def device_class(self) -> BinarySensorDeviceClass | None:
+        """기기 클래스 반환."""
         return self._device.attribute.get("device_class", None)
     
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        """추가 상태 속성 반환."""
         return self._device.attribute.get("extra_state", None)
-    

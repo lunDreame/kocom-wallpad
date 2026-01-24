@@ -1,4 +1,4 @@
-"""Fan platform for Kocom Wallpad."""
+"""코콤 월패드 팬 플랫폼 (Fan Platform)."""
 
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Kocom fan platform."""
+    """코콤 팬 플랫폼 설정."""
     gateway: KocomGateway = hass.data[DOMAIN][entry.entry_id]
 
     @callback
     def async_add_fan(devices=None):
-        """Add fan entities."""
+        """팬 엔티티 추가."""
         if devices is None:
             devices = gateway.get_devices_from_platform(Platform.FAN)
 
@@ -52,10 +52,10 @@ async def async_setup_entry(
 
 
 class KocomFan(KocomBaseEntity, FanEntity):
-    """Representation of a Kocom fan."""
+    """코콤 팬(환기장치) 엔티티."""
 
     def __init__(self, gateway: KocomGateway, device: DeviceState) -> None:
-        """Initialize the fan."""
+        """팬 초기화."""
         super().__init__(gateway, device)
         self._attr_supported_features = (
             FanEntityFeature.SET_SPEED |
@@ -67,33 +67,40 @@ class KocomFan(KocomBaseEntity, FanEntity):
 
     @property
     def is_on(self) -> bool:
+        """켜짐 여부 반환."""
         return self._device.state["state"]
     
     @property
     def speed_count(self) -> int:
+        """속도 단계 수 반환."""
         return len(self._device.attribute["speed_list"])
 
     @property
     def percentage(self) -> int:
+        """현재 속도 백분율 반환."""
         if not self._device.state["state"] or self._device.state["speed"] == 0:
             return 0
         return ordered_list_item_to_percentage(self._device.attribute["speed_list"], self._device.state["speed"])
     
     @property
     def preset_mode(self) -> str:
+        """현재 프리셋 모드 반환."""
         return self._device.state["preset_mode"]
     
     @property
     def preset_modes(self) -> List[str]:
+        """지원 가능한 프리셋 모드 목록 반환."""
         return self._device.attribute["preset_modes"]
 
     async def async_set_percentage(self, percentage: int) -> None:
+        """속도 백분율 설정."""
         args = {"speed": 0}
         if percentage > 0:
             args["speed"] = percentage_to_ordered_list_item(self._device.attribute["speed_list"], percentage)
         await self.gateway.async_send_action(self._device.key, "set_percentage", **args)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """프리셋 모드 설정."""
         args = {"preset_mode": preset_mode}
         await self.gateway.async_send_action(self._device.key, "set_preset", **args)
 
@@ -104,8 +111,10 @@ class KocomFan(KocomBaseEntity, FanEntity):
         preset_mode: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
+        """팬 켜기."""
         await self.gateway.async_send_action(self._device.key, "turn_on")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        """팬 끄기."""
         await self.gateway.async_send_action(self._device.key, "turn_off")
         

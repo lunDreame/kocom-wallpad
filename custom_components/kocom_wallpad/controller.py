@@ -1,4 +1,7 @@
-"""Controller for Kocom Wallpad."""
+"""코콤 월패드 컨트롤러 (Controller).
+
+패킷을 파싱하여 기기 상태(DeviceState)를 생성하거나, 기기 제어 명령을 패킷으로 변환합니다.
+"""
 
 from __future__ import annotations
 
@@ -45,77 +48,96 @@ REV_VENT_PRESET_MAP = {v: k for k, v in VENTILATION_PRESET_MAP.items()}
 
 @dataclass(slots=True, frozen=True)
 class PacketFrame:
-    """Packet frame."""
+    """패킷 프레임 구조체."""
     raw: bytes
 
     @property
     def packet_type(self) -> int:
+        """패킷 타입 반환."""
         return (self.raw[3] >> 4) & 0x0F
 
     @property
     def dest(self) -> bytes:
+        """수신자 주소 반환."""
         return self.raw[5:7]
 
     @property
     def src(self) -> bytes:
+        """송신자 주소 반환."""
         return self.raw[7:9]
 
     @property
     def command(self) -> int:
+        """명령 코드 반환."""
         return self.raw[9]
 
     @property
     def payload(self) -> bytes:
+        """데이터 페이로드 반환."""
         return self.raw[10:18]
 
     @property
     def checksum(self) -> int:
+        """체크섬 값 반환."""
         return self.raw[18]
 
     @property
     def peer(self) -> tuple[int, int]:
+        """상대방 기기 식별자 (타입, 룸 인덱스) 반환."""
         if self.dest[0] == 0x01:
             return (self.src[0], self.src[1])
         elif self.src[0] == 0x01:
             return (self.dest[0], self.dest[1])
         else:
-            LOGGER.warning("Peer resolution failed: dest=%s, src=%s", self.dest.hex(), self.src.hex())
+            LOGGER.warning("Peer 해독 실패: dest=%s, src=%s", self.dest.hex(), self.src.hex())
             return (0, 0)
 
     @property
     def dev_type(self) -> DeviceType:
+        """기기 타입 반환."""
         dev_type = DEVICE_TYPE_MAP.get(self.peer[0], None)
         if dev_type is None:
-            LOGGER.debug("Unknown device type code=%s, raw=%s", hex(self.peer[0]), self.raw.hex())
+            LOGGER.debug("알 수 없는 기기 타입 code=%s, raw=%s", hex(self.peer[0]), self.raw.hex())
             dev_type = DeviceType.UNKNOWN
         return dev_type
 
     @property
     def dev_room(self) -> int:
+        """기기 룸 인덱스 반환."""
         return self.peer[1]
 
 
 class KocomController:
-    """Controller for Kocom Wallpad."""
+    """코콤 월패드 컨트롤러 클래스."""
 
     def __init__(self, gateway) -> None:
-        """Initialize the controller."""
+        """컨트롤러 초기화.
+
+        Args:
+            gateway: 게이트웨이 인스턴스
+        """
         self.gateway = gateway
         self._device_storage: dict[str, Any] = {}
 
     @staticmethod
     def _checksum(buf: bytes) -> int:
+        """체크섬 계산."""
         return sum(buf) % 256
 
     def process_packet(self, packet: bytes) -> None:
-        """Process a validated packet."""
-        LOGGER.debug("Packet received: raw=%s", packet.hex())
+        """수신된 패킷 처리.
+
+        Args:
+            packet: 검증된 패킷 데이터
+        """
+        LOGGER.debug("패킷 수신: raw=%s", packet.hex())
         self._dispatch_packet(packet)
 
     def _dispatch_packet(self, packet: bytes) -> None:
+        """패킷 분석 및 기기 상태 핸들러 분배."""
         frame = PacketFrame(packet)
         if self._checksum(packet[2:18]) != frame.checksum:
-            LOGGER.debug("Packet checksum is invalid. raw=%s", frame.raw.hex())
+            LOGGER.debug("패킷 체크섬 오류. raw=%s", frame.raw.hex())
             return
 
         dev_state = None
@@ -141,7 +163,7 @@ class KocomController:
         elif frame.dev_type == DeviceType.AIRQUALITY:
             dev_state = self._handle_airquality(frame)
         else:
-            LOGGER.debug("Unhandled device type: %s (raw=%s)", frame.dev_type.name, frame.raw.hex())
+            LOGGER.debug("처리되지 않은 기기 타입: %s (raw=%s)", frame.dev_type.name, frame.raw.hex())
             return
 
         if not dev_state:
@@ -156,6 +178,7 @@ class KocomController:
             self.gateway.on_device_state(dev_state)
             
     def _handle_cutoff_switch(self, frame: PacketFrame) -> DeviceState:
+        """일괄 소등 스위치 핸들러."""
         if frame.command in (0x65, 0x66):
             key = DeviceKey(
                 device_type=frame.dev_type,
@@ -168,6 +191,7 @@ class KocomController:
             return dev
 
     def _handle_switch(self, frame: PacketFrame) -> List[DeviceState]:
+        """조명 및 콘센트 핸들러."""
         states: List[DeviceState] = []
         if frame.command == 0x00:
             for idx in range(8):
@@ -191,6 +215,7 @@ class KocomController:
             return states
 
     def _handle_thermostat(self, frame: PacketFrame) -> List[DeviceState]:
+        """난방기 핸들러 (데이터 타당성 검사 포함)."""
         states: List[DeviceState] = []
         if frame.command == 0x00:
             key = DeviceKey(
@@ -201,8 +226,20 @@ class KocomController:
             )
             havc_mode = HVACMode.HEAT if frame.payload[0] >> 4 == 0x01 else HVACMode.OFF
             preset_mode = PRESET_AWAY if frame.payload[1] & 0x0F == 0x01 else PRESET_NONE
-            target_temp = float(frame.payload[2])
-            current_temp = float(frame.payload[4])
+
+            # 데이터 타당성 검사 (Sanity Check)
+            raw_target = frame.payload[2]
+            raw_current = frame.payload[4]
+
+            target_temp = float(raw_target)
+            current_temp = float(raw_current)
+
+            # 유효 범위 확인 (0도 ~ 50도), 0xFF 등 잘못된 값 필터링
+            if raw_target == 0xFF or not (0 <= target_temp <= 50):
+                 target_temp = 0.0
+            if raw_current == 0xFF or not (0 <= current_temp <= 50):
+                 current_temp = 0.0
+
             hot_temp = frame.payload[3]
             heat_temp = frame.payload[5]
             error_code = frame.payload[6]
@@ -219,17 +256,22 @@ class KocomController:
                 "target_temp": self._device_storage.get(f"{key.unique_id}_thermo_target", target_temp),
                 "current_temp": self._device_storage.get(f"{key.unique_id}_thermo_current", current_temp),
             }
+
+            # 0.5도 단위 감지 로직
             if target_temp % 1 == 0.5 and self._device_storage.get(f"{key.unique_id}_thermo_step") != 0.5:
-                LOGGER.debug("0.5°C step detected, heating supports 0.5 increments.")
+                LOGGER.debug("0.5도 단위 난방 제어 감지.")
                 self._device_storage[f"{key.unique_id}_thermo_step"] = 0.5
+
             if target_temp != 0 and current_temp != 0:
                 if havc_mode == HVACMode.HEAT and self._device_storage.get(f"{key.unique_id}_thermo_target") != target_temp:
-                    LOGGER.debug(f"User target temperature update: {target_temp}")
+                    LOGGER.debug(f"사용자 설정 온도 업데이트: {target_temp}")
                     self._device_storage[f"{key.unique_id}_thermo_target"] = target_temp
                 self._device_storage[f"{key.unique_id}_thermo_current"] = current_temp
+
             dev = DeviceState(key=key, platform=Platform.CLIMATE, attribute=attribute, state=state)
             states.append(dev)
             
+            # 온수 온도 센서
             key = DeviceKey(
                 device_type=frame.dev_type,
                 room_index=frame.dev_room,
@@ -240,10 +282,11 @@ class KocomController:
                 "device_class": SensorDeviceClass.TEMPERATURE,
                 "unit_of_measurement": UnitOfTemperature.CELSIUS
             }
-            if hot_temp > 0:
+            if 0 < hot_temp <= 80: # 온수 유효 범위 체크 (대략 80도 이하)
                 dev = DeviceState(key=key, platform=Platform.SENSOR, attribute=attribute, state=hot_temp)
                 states.append(dev)
             
+            # 난방수 온도 센서
             key = DeviceKey(
                 device_type=frame.dev_type,
                 room_index=frame.dev_room,
@@ -254,10 +297,11 @@ class KocomController:
                 "device_class": SensorDeviceClass.TEMPERATURE,
                 "unit_of_measurement": UnitOfTemperature.CELSIUS
             }
-            if heat_temp > 0:
+            if 0 < heat_temp <= 80:
                 dev = DeviceState(key=key, platform=Platform.SENSOR, attribute=attribute, state=heat_temp)
                 states.append(dev)
             
+            # 에러 코드 센서
             key = DeviceKey(
                 device_type=frame.dev_type,
                 room_index=frame.dev_room,
@@ -276,6 +320,7 @@ class KocomController:
             return states
         
     def _handle_airconditioner(self, frame: PacketFrame) -> DeviceState:
+        """에어컨 핸들러 (데이터 타당성 검사 포함)."""
         if frame.command == 0x00:
             key = DeviceKey(
                 device_type=frame.dev_type,
@@ -288,8 +333,18 @@ class KocomController:
             else:
                 havc_mode = HVACMode.OFF
             fan_mode = AIRCONDITIONER_FAN_MAP.get(frame.payload[2], FAN_LOW)
-            current_temp = float(frame.payload[4])
-            target_temp = float(frame.payload[5])
+
+            # 데이터 타당성 검사
+            raw_current = frame.payload[4]
+            raw_target = frame.payload[5]
+
+            current_temp = float(raw_current)
+            target_temp = float(raw_target)
+
+            if raw_current == 0xFF or not (0 <= current_temp <= 50):
+                current_temp = 0.0
+            if raw_target == 0xFF or not (0 <= target_temp <= 50):
+                target_temp = 0.0
 
             attribute = {
                 "hvac_modes": [*AIRCONDITIONER_HVAC_MAP.values(), HVACMode.OFF],
@@ -307,6 +362,7 @@ class KocomController:
             return dev
     
     def _handle_ventilation(self, frame: PacketFrame) -> List[DeviceState]:
+        """환기 장치 핸들러."""
         states: List[DeviceState] = []
         if frame.command == 0x00:
             key = DeviceKey(
@@ -333,11 +389,11 @@ class KocomController:
             }
             if preset_mode != "unknown" and preset_mode != "ventilation":
                 if self._device_storage.get("ventil_modes") is None:
-                    LOGGER.debug("New ventilation preset detected (excluding default).")
+                    LOGGER.debug("새로운 환기 프리셋 감지 (기본값 제외).")
                     self._device_storage["ventil_feature"] = True
                     self._device_storage["ventil_modes"] = ["ventilation"]
                 if preset_mode not in self._device_storage["ventil_modes"]:
-                    LOGGER.debug(f"Added presets: {preset_mode}")
+                    LOGGER.debug(f"프리셋 추가됨: {preset_mode}")
                     self._device_storage["ventil_modes"].append(preset_mode)
             dev = DeviceState(key=key, platform=Platform.FAN, attribute=attribute, state=state)
             states.append(dev)
@@ -352,7 +408,7 @@ class KocomController:
                 "device_class": SensorDeviceClass.CO2,
                 "unit_of_measurement": "ppm"
             }
-            if co2_value > 0:
+            if co2_value > 0 and co2_value < 5000: # CO2 유효 범위 체크 (일반적으로 0-5000ppm)
                 dev = DeviceState(key=key, platform=Platform.SENSOR, attribute=attribute, state=co2_value)
                 states.append(dev)
             
@@ -374,6 +430,7 @@ class KocomController:
             return states
 
     def _handle_gasvalve(self, frame: PacketFrame) -> DeviceState:
+        """가스 밸브 핸들러."""
         if frame.command in (0x01, 0x02):
             key = DeviceKey(
                 device_type=frame.dev_type,
@@ -386,6 +443,7 @@ class KocomController:
             return dev
 
     def _handle_elevator(self, frame: PacketFrame) -> List[DeviceState]:    
+        """엘리베이터 핸들러."""
         states: List[DeviceState] = []
         key = DeviceKey(
             device_type=frame.dev_type,
@@ -440,6 +498,7 @@ class KocomController:
         return states
     
     def _handle_motion(self, frame: PacketFrame) -> DeviceState:
+        """모션 센서 핸들러."""
         if frame.command in (0x00, 0x04):
             key = DeviceKey(
                 device_type=frame.dev_type,
@@ -455,6 +514,7 @@ class KocomController:
             return dev
         
     def _handle_airquality(self, frame: PacketFrame) -> List[DeviceState]:
+        """공기질 센서 핸들러."""
         states: List[DeviceState] = []
         if frame.command in (0x00, 0x3A):
             data_mapping = {
@@ -482,8 +542,8 @@ class KocomController:
                     states.append(dev)
             return states
     
-    # TODO: 명령 상태 비교 로직 통합 (gateway.py)
     def _match_key_and(self, key: DeviceKey, cond: Predicate) -> Predicate:
+        """키 일치 및 조건 검사 함수 생성기."""
         def _inner(dev: DeviceState) -> bool:
             if dev.key.key != key.key:
                 return False
@@ -491,6 +551,7 @@ class KocomController:
         return _inner
 
     def _expect_for_switch_like(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """스위치류 기기 응답 기대 조건."""
         def _on(dev: DeviceState) -> bool:  return bool(dev.state) is True
         def _off(dev: DeviceState) -> bool: return bool(dev.state) is False
 
@@ -501,6 +562,7 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
 
     def _expect_for_ventilation(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """환기 장치 응답 기대 조건."""
         def is_on(d: DeviceState) -> bool:
             return isinstance(d.state, dict) and d.state.get("state") is True
         def is_off(d: DeviceState) -> bool:
@@ -521,6 +583,7 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
 
     def _expect_for_gasvalve(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """가스 밸브 응답 기대 조건."""
         # 밸브는 동작이 느릴 수 있으니 기본 타임아웃 상향
         base_timeout = max(CMD_CONFIRM_TIMEOUT, 1.5)
         if action == "turn_on":
@@ -530,6 +593,7 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), base_timeout
 
     def _expect_for_thermostat(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """난방기 응답 기대 조건."""
         if action == "set_hvac":
             hm = kwargs["hvac_mode"]
             return self._match_key_and(key, lambda d: isinstance(d.state, dict) and d.state.get("hvac_mode") == hm), CMD_CONFIRM_TIMEOUT
@@ -546,6 +610,7 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
     
     def _expect_for_airconditioner(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """에어컨 응답 기대 조건."""
         if action == "set_hvac":
             hm = kwargs["hvac_mode"]
             return self._match_key_and(key, lambda d: isinstance(d.state, dict) and d.state.get("hvac_mode") == hm), CMD_CONFIRM_TIMEOUT
@@ -565,6 +630,7 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
 
     def build_expectation(self, key: DeviceKey, action: str, **kwargs: Any) -> Tuple[Predicate, float]:
+        """기기별 명령 실행 후 기대 상태 생성."""
         dt = key.device_type
         if dt in (DeviceType.LIGHT, DeviceType.LIGHTCUTOFF, DeviceType.OUTLET, DeviceType.ELEVATOR):
             return self._expect_for_switch_like(key, action, **kwargs)
@@ -579,6 +645,19 @@ class KocomController:
         return self._match_key_and(key, lambda _d: False), CMD_CONFIRM_TIMEOUT
 
     def generate_command(self, key: DeviceKey, action: str, **kwargs) -> Tuple[bytes, Predicate, float]:
+        """기기 제어 명령 패킷 생성.
+
+        Args:
+            key: 대상 기기 키
+            action: 수행할 동작 (예: turn_on, set_temperature)
+            **kwargs: 동작 파라미터
+
+        Returns:
+            (패킷 bytes, 기대 조건 함수, 타임아웃)
+
+        Raises:
+            ValueError: 잘못된 기기 타입인 경우
+        """
         device_type = key.device_type
         room_index = key.room_index
         device_index = key.device_index
@@ -623,6 +702,7 @@ class KocomController:
         return packet, expect, timeout
 
     def _generate_switch(self, key: DeviceKey, action: str, data: bytes) -> bytes:
+        """스위치 패킷 데이터 생성."""
         for idx in range(8):
             new_key = replace(key, device_index=idx)
             st = self.gateway.registry.get(new_key)
@@ -634,6 +714,7 @@ class KocomController:
         return data
 
     def _generate_ventilation(self, action: str, data: bytes, **kwargs: Any) -> bytes:
+        """환기 장치 패킷 데이터 생성."""
         if action == "set_preset":
             pm = kwargs["preset_mode"]
             data[0] = 0x11
@@ -647,6 +728,7 @@ class KocomController:
         return data
     
     def _generate_thermostat(self, action: str, data: bytes, **kwargs: Any) -> bytes:
+        """난방기 패킷 데이터 생성."""
         if action == "set_hvac":
             hm = kwargs["hvac_mode"]
             data[0] = 0x11 if hm == HVACMode.HEAT else 0x00
@@ -662,6 +744,7 @@ class KocomController:
         return data
     
     def _generate_airconditioner(self, action: str, data: bytes, **kwargs: Any) -> bytes:
+        """에어컨 패킷 데이터 생성."""
         if action == "set_hvac":
             hm = kwargs["hvac_mode"]
             if hm == HVACMode.OFF:

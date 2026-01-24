@@ -1,4 +1,4 @@
-"""Base platform for Kocom Wallpad."""
+"""코콤 월패드 기본 엔티티 (Base Entity)."""
 
 from __future__ import annotations
 
@@ -28,10 +28,15 @@ ENTITY_DESCRIPTION_MAP = {
 
 
 class KocomBaseEntity(RestoreEntity):
-    """Base class for Kocom entities."""
+    """코콤 엔티티의 기본 클래스."""
 
     def __init__(self, gateway, device) -> None:
-        """Initialize the base entity."""
+        """엔티티 초기화.
+
+        Args:
+            gateway: 게이트웨이 인스턴스
+            device: 기기 상태 객체
+        """
         super().__init__()
         self.gateway = gateway
         self._device = device
@@ -54,6 +59,7 @@ class KocomBaseEntity(RestoreEntity):
         
     @property
     def format_key(self) -> str:
+        """번역 키 포맷."""
         if self._device.key.sub_type == SubType.NONE:
             return self._device.key.device_type.name.lower()
         else:
@@ -61,6 +67,7 @@ class KocomBaseEntity(RestoreEntity):
 
     @property
     def format_translation_placeholders(self) -> str:
+        """번역 플레이스홀더."""
         if self._device.key.sub_type == SubType.NONE:
             return f"{str(self._device.key.room_index)}-{str(self._device.key.device_index)}"
         else:
@@ -68,6 +75,7 @@ class KocomBaseEntity(RestoreEntity):
 
     @property
     def format_identifiers(self) -> str:
+        """기기 식별자 포맷."""
         if self._device.key.device_type in {
             DeviceType.VENTILATION, DeviceType.GASVALVE, DeviceType.ELEVATOR, DeviceType.MOTION
         }:
@@ -80,6 +88,7 @@ class KocomBaseEntity(RestoreEntity):
             return f"KOCOM {self._device.key.device_type.name}"
 
     async def async_added_to_hass(self):
+        """HA에 추가될 때 호출."""
         sig = self.gateway.async_signal_device_updated(self._device.key.unique_id)
 
         @callback
@@ -89,6 +98,7 @@ class KocomBaseEntity(RestoreEntity):
         self._unsubs.append(async_dispatcher_connect(self.hass, sig, _handle_update))
 
     async def async_will_remove_from_hass(self) -> None:
+        """HA에서 제거될 때 호출."""
         for unsub in self._unsubs:
             try:
                 unsub()
@@ -98,10 +108,12 @@ class KocomBaseEntity(RestoreEntity):
 
     @callback
     def update_from_state(self) -> None:
+        """상태 업데이트."""
         self.async_write_ha_state()
 
     @property
     def extra_restore_state_data(self) -> RestoredExtraData:
+        """상태 복구를 위한 추가 데이터 저장."""
         return RestoredExtraData({
             "packet": getattr(self._device, "_packet", bytes()).hex(),
             "device_storage": self.gateway.controller._device_storage
