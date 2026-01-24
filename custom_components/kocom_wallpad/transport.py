@@ -5,10 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import asyncio
-import serial_asyncio
 import time
+import logging
 
-from .const import LOGGER
+try:
+    import serial_asyncio_fast as serial_asyncio
+except ImportError:
+    try:
+        import pyserial_asyncio_fast as serial_asyncio
+    except ImportError:
+        import serial_asyncio
+
+from .const import LOGGER, PACKET_PREFIX, PACKET_SUFFIX, PACKET_LEN
 
 
 @dataclass
@@ -27,6 +35,7 @@ class AsyncConnection:
         self._last_activity_mono: float = time.monotonic()
         self._last_reconn_delay: float = 0.0
         self._connected = True
+        self._buffer = bytearray()
 
     async def open(self) -> None:
         try:
@@ -59,6 +68,7 @@ class AsyncConnection:
                 self._writer = None
         self._reader = None
         self._connected = False
+        self._buffer.clear()
 
     def _is_connected(self) -> bool:
         return self._connected
@@ -69,34 +79,132 @@ class AsyncConnection:
     def idle_since(self) -> float:
         return max(0.0, time.monotonic() - self._last_activity_mono)
 
-    async def send(self, data: bytes) -> int:
-        if not self._writer:
-            raise RuntimeError("connection not open")
-        try:
-            LOGGER.debug("Sending: %s", data.hex())
-            self._writer.write(data)
-            await self._writer.drain()
-            self._touch()
-            return len(data)
-        except Exception as e:
-            LOGGER.warning("Send failed: %r", e)
-            await self.reconnect()
-            return 0
+    @staticmethod
+    def _checksum(buf: bytes) -> int:
+        return sum(buf) % 256
 
-    async def recv(self, nbytes: int, timeout: float = 0.05) -> bytes:
+    async def send_packet(self, data: bytes) -> bool:
+        """Send packet with exponential backoff retry."""
+        delays = [0.5, 1.0, 2.0]
+        for attempt in range(len(delays) + 1):
+            if not self._writer:
+                # Try to reconnect if not connected
+                await self.reconnect()
+
+            if self._writer:
+                try:
+                    LOGGER.debug("Sending packet (attempt %d): %s", attempt + 1, data.hex())
+                    self._writer.write(data)
+                    await self._writer.drain()
+                    self._touch()
+                    return True
+                except Exception as e:
+                    LOGGER.warning("Send failed on attempt %d: %r", attempt + 1, e)
+
+            if attempt < len(delays):
+                wait_time = delays[attempt]
+                LOGGER.info("Latency detected, retrying packet send in %.1fs...", wait_time)
+                await asyncio.sleep(wait_time)
+                if not self._connected:
+                    await self.reconnect()
+            else:
+                LOGGER.error("Failed to send packet after %d attempts", attempt + 1)
+
+        return False
+
+    async def recv_packet(self) -> Optional[bytes]:
+        """Receive a full valid packet."""
         if not self._reader:
-            raise RuntimeError("connection not open")
-        try:
-            chunk = await asyncio.wait_for(self._reader.read(nbytes), timeout=timeout)
-        except asyncio.TimeoutError:
-            return b""
-        except Exception as e:
-            LOGGER.warning("Recv failed: %r", e)
-            await self.reconnect()
-            return b""
-        if chunk:
-            self._touch()
-        return chunk
+             await asyncio.sleep(0.1)
+             if not self._reader:
+                 return None
+
+        while True:
+            # 1. Find Header
+            start_idx = self._buffer.find(PACKET_PREFIX)
+            if start_idx == -1:
+                # Keep last byte just in case it's 0xAA (half header)
+                if len(self._buffer) > 0:
+                     last_byte = self._buffer[-1:]
+                     self._buffer.clear()
+                     self._buffer.extend(last_byte)
+
+                try:
+                    # 5.0s general read timeout
+                    chunk = await asyncio.wait_for(self._reader.read(512), timeout=5.0)
+                    if not chunk:
+                        # EOF
+                        await self.reconnect()
+                        return None
+                    self._buffer.extend(chunk)
+                    self._touch()
+                    continue
+                except asyncio.TimeoutError:
+                    return None
+                except Exception as e:
+                    LOGGER.warning("Read error: %s", e)
+                    await self.reconnect()
+                    return None
+
+            # Header found. Discard garbage before header.
+            if start_idx > 0:
+                del self._buffer[:start_idx]
+
+            # Now self._buffer starts with 0xAA 0x55
+            # We need 21 bytes total.
+
+            start_time = time.monotonic()
+            while len(self._buffer) < PACKET_LEN:
+                 needed = PACKET_LEN - len(self._buffer)
+                 elapsed = time.monotonic() - start_time
+                 remaining_time = 2.0 - elapsed
+
+                 if remaining_time <= 0:
+                     LOGGER.warning("Packet assembly timeout (header found but body incomplete). Clearing buffer.")
+                     self._buffer.clear()
+                     break
+
+                 try:
+                     chunk = await asyncio.wait_for(self._reader.read(needed), timeout=remaining_time)
+                     if not chunk:
+                         await self.reconnect()
+                         return None
+                     self._buffer.extend(chunk)
+                     self._touch()
+                 except asyncio.TimeoutError:
+                     LOGGER.warning("Packet assembly timeout. Clearing buffer.")
+                     self._buffer.clear()
+                     break
+                 except Exception as e:
+                     LOGGER.warning("Read error during packet assembly: %s", e)
+                     await self.reconnect()
+                     return None
+
+            if len(self._buffer) < PACKET_LEN:
+                continue # Buffer cleared, retry from start
+
+            # We have >= 21 bytes
+            packet_candidate = self._buffer[:PACKET_LEN]
+
+            # Verify Suffix
+            if not packet_candidate.endswith(PACKET_SUFFIX):
+                LOGGER.warning("Invalid packet suffix. Frame shifting.")
+                del self._buffer[0] # Shift one byte and retry finding prefix
+                continue
+
+            # Verify Checksum
+            # Data bytes for checksum: indices 2 to 17
+            calc_sum = self._checksum(packet_candidate[2:18])
+            recv_sum = packet_candidate[18]
+
+            if calc_sum != recv_sum:
+                LOGGER.warning("Checksum fail (calc %02x != recv %02x). Frame shifting.", calc_sum, recv_sum)
+                del self._buffer[0]
+                continue
+
+            # Valid packet!
+            del self._buffer[:PACKET_LEN]
+            return bytes(packet_candidate)
 
     async def reconnect(self) -> None:
         self._connected = False
@@ -108,7 +216,10 @@ class AsyncConnection:
 
         if self._writer is not None:
             self._writer.close()
-            await self._writer.wait_closed()
+            try:
+                await self._writer.wait_closed()
+            except Exception:
+                pass
         
         LOGGER.info("Connection lost. Reconnecting in %.1f sec...", delay)
         await asyncio.sleep(delay)

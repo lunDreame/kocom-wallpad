@@ -9,17 +9,14 @@ from typing import Optional, Dict, Tuple, List, Callable
 
 from homeassistant.core import HomeAssistant, Event, callback
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers import entity_registry as er, restore_state
+from homeassistant.helpers import entity_registry as er, restore_state, device_registry as dr
 from homeassistant.const import Platform
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     LOGGER,
     DOMAIN,
-    RECV_POLL_SEC,
     IDLE_GAP_SEC,
-    SEND_RETRY_MAX,
-    SEND_RETRY_GAP,
     DeviceType,
 )
 from .models import DeviceKey, DeviceState
@@ -132,6 +129,17 @@ class KocomGateway:
 
     async def async_start(self) -> None:
         LOGGER.info("Starting gateway - %s:%s", self.host, self.port or "")
+
+        # Register Bridge Device (Hub)
+        device_registry = dr.async_get(self.hass)
+        device_registry.async_get_or_create(
+            config_entry_id=self.entry.entry_id,
+            identifiers={(DOMAIN, str(self.host))},
+            manufacturer="Kocom",
+            model="EW11 RS485 Bridge",
+            name="Kocom Wallpad Gateway",
+        )
+
         await self.conn.open()
         self._last_rx_monotonic = self.conn.idle_since()
         self._last_tx_monotonic = self.conn.idle_since()
@@ -160,10 +168,12 @@ class KocomGateway:
                 if not self.conn._is_connected():
                     await asyncio.sleep(5)
                     continue
-                chunk = await self.conn.recv(512, RECV_POLL_SEC)
-                if chunk:
+
+                packet = await self.conn.recv_packet()
+                if packet:
                     self._last_rx_monotonic = asyncio.get_running_loop().time()
-                    self.controller.feed(chunk)
+                    self.controller.process_packet(packet)
+                # If packet is None, it means timeout or error, loop and retry
         except asyncio.CancelledError:
             LOGGER.debug("Read loop cancelled")
             raise
@@ -305,51 +315,29 @@ class KocomGateway:
                     self._tx_queue.task_done()
                     continue
 
-                # 재시도 루프
-                success = False
-                for attempt in range(1, SEND_RETRY_MAX + 1):
-                    # idle 대기 (최대 1초)
-                    LOGGER.debug("TX idle wait (max 1.0s) before '%s'...", item.action)
-                    t0 = asyncio.get_running_loop().time()
-                    while not self.is_idle():
-                        await asyncio.sleep(0.01)
-                        if asyncio.get_running_loop().time() - t0 > 1.0:
-                            LOGGER.debug("Idle wait timeout (%.2fs).", asyncio.get_running_loop().time() - t0)
-                            break
-
-                    # 연결 확인
-                    if not self.conn._is_connected():
-                        LOGGER.warning("Connection not ready. '%s' abort.", item.action)
+                # idle wait (max 1.0s)
+                # Ensure we don't spam the bus if it was just busy
+                t0 = asyncio.get_running_loop().time()
+                while not self.is_idle():
+                    await asyncio.sleep(0.01)
+                    if asyncio.get_running_loop().time() - t0 > 1.0:
+                        LOGGER.debug("Idle wait timeout (%.2fs).", asyncio.get_running_loop().time() - t0)
                         break
 
-                    # 전송
-                    try:
-                        await self.conn.send(packet)
-                    except Exception as e:
-                        LOGGER.warning("Send failed on attempt %d: %s", attempt, e)
-                        if attempt < SEND_RETRY_MAX:
-                            await asyncio.sleep(SEND_RETRY_GAP)
-                            continue
-                        else:
-                            break
-
+                # Send (with retry in transport)
+                success = False
+                if await self.conn.send_packet(packet):
                     self._last_tx_monotonic = asyncio.get_running_loop().time()
 
-                    # 확인 대기
+                    # Confirm
                     try:
                         _ = await self._wait_for_confirmation(item.key, expect_predicate, timeout)
-                        LOGGER.debug("Command '%s' confirmed (attempt %d).", item.action, attempt)
+                        LOGGER.debug("Command '%s' confirmed.", item.action)
                         success = True
-                        break
                     except asyncio.TimeoutError:
-                        if attempt < SEND_RETRY_MAX:
-                            LOGGER.warning(
-                                "No confirmation for '%s' (attempt %d/%d). Retrying in %.2fs...",
-                                item.action, attempt, SEND_RETRY_MAX, SEND_RETRY_GAP
-                            )
-                            await asyncio.sleep(SEND_RETRY_GAP)
-                        else:
-                            LOGGER.error("Command '%s' failed after %d attempts.", item.action, SEND_RETRY_MAX)
+                        LOGGER.warning("Command '%s' sent but no confirmation received within %.1fs.", item.action, timeout)
+                else:
+                    LOGGER.error("Command '%s' failed to send after retries.", item.action)
 
                 if not item.future.done():
                     item.future.set_result(success)
