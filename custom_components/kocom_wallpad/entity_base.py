@@ -45,7 +45,6 @@ class KocomBaseEntity(RestoreEntity):
             translation_placeholders={"id": self.format_translation_placeholders}
         )
         self._attr_device_info = DeviceInfo(
-            connections={(self.gateway.host, self.unique_id)},
             identifiers={(DOMAIN, f"{self.format_identifiers}")},
             manufacturer="KOCOM Co., Ltd",
             model="Smart Wallpad",

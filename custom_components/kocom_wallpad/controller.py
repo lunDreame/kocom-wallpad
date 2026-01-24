@@ -101,44 +101,16 @@ class KocomController:
     def __init__(self, gateway) -> None:
         """Initialize the controller."""
         self.gateway = gateway
-        self._rx_buf = bytearray()
         self._device_storage: dict[str, Any] = {}
 
     @staticmethod
     def _checksum(buf: bytes) -> int:
         return sum(buf) % 256
 
-    def feed(self, chunk: bytes) -> None:
-        if not chunk:
-            return
-        self._rx_buf.extend(chunk)
-        for pkt in self._split_buf():
-            LOGGER.debug("Packet received: raw=%s", pkt.hex())
-            self._dispatch_packet(pkt)
-
-    def _split_buf(self) -> List[bytes]:
-        packets: List[bytes] = []
-        buf = self._rx_buf
-        while True:
-            start = buf.find(PACKET_PREFIX)
-            if start < 0:
-                # 프리픽스 이전의 쓰레기 데이터 제거
-                buf.clear()
-                break
-            if start > 0:
-                del buf[:start]
-            if len(buf) < PACKET_LEN:
-                # 더 받을 때까지 대기
-                break
-            # 고정 길이 확인 후 서픽스 검사
-            candidate = bytes(buf[:PACKET_LEN])
-            if not candidate.endswith(PACKET_SUFFIX):
-                # 한 바이트 밀어서 재탐색 (프레이밍 어긋남 복구)
-                del buf[0]
-                continue
-            packets.append(candidate)
-            del buf[:PACKET_LEN]
-        return packets
+    def process_packet(self, packet: bytes) -> None:
+        """Process a validated packet."""
+        LOGGER.debug("Packet received: raw=%s", packet.hex())
+        self._dispatch_packet(packet)
 
     def _dispatch_packet(self, packet: bytes) -> None:
         frame = PacketFrame(packet)
@@ -645,7 +617,7 @@ class KocomController:
 
         body = b"".join([type_bytes, padding, dest_dev, dest_room, src_dev, src_room, command, bytes(data)])
         checksum = bytes([self._checksum(body)])
-        packet = bytes([0xAA, 0x55]) + body + checksum + bytes([0x0D, 0x0D])
+        packet = PACKET_PREFIX + body + checksum + PACKET_SUFFIX
 
         expect, timeout = self.build_expectation(key, action, **kwargs)
         return packet, expect, timeout
@@ -706,4 +678,3 @@ class KocomController:
             data[0] = 0x10
             data[5] = int(tt)
         return data
-    
