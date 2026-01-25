@@ -129,7 +129,6 @@ class RingBuffer:
         snapshot = self.peek(self._count)
         return snapshot.find(pattern)
 
-    @property
     def __len__(self) -> int:
         return self._count
 
