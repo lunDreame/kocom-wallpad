@@ -19,7 +19,7 @@ from homeassistant.util.percentage import (
 from .gateway import KocomGateway
 from .models import DeviceState
 from .entity_base import KocomBaseEntity
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN
 
 
 async def async_setup_entry(

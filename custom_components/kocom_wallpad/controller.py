@@ -23,7 +23,6 @@ from .const import (
     LOGGER,
     PACKET_PREFIX,
     PACKET_SUFFIX,
-    PACKET_LEN,
     CMD_CONFIRM_TIMEOUT,
     DeviceType,
     SubType,
@@ -660,8 +659,6 @@ class KocomController:
         """
         device_type = key.device_type
         room_index = key.room_index
-        device_index = key.device_index
-        sub_type = key.sub_type
 
         if device_type not in REV_DT_MAP:
             raise ValueError(f"Invalid device type: {device_type}")

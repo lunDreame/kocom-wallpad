@@ -79,11 +79,11 @@ class KocomBaseEntity(RestoreEntity):
         if self._device.key.device_type in {
             DeviceType.VENTILATION, DeviceType.GASVALVE, DeviceType.ELEVATOR, DeviceType.MOTION
         }:
-            return f"KOCOM"
+            return "KOCOM"
         elif self._device.key.device_type in {
             DeviceType.LIGHT, DeviceType.LIGHTCUTOFF, DeviceType.DIMMINGLIGHT
         }:
-            return f"KOCOM LIGHT"
+            return "KOCOM LIGHT"
         else:
             return f"KOCOM {self._device.key.device_type.name}"
 

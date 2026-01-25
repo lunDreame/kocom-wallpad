@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any, List
-from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorEntity,
@@ -13,7 +12,6 @@ from homeassistant.components.sensor import (
 from homeassistant.const import (
     Platform,
     EntityCategory,
-    CONF_HOST,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
@@ -24,7 +22,7 @@ from homeassistant.util import dt as dt_util
 from .gateway import KocomGateway
 from .models import DeviceState
 from .entity_base import KocomBaseEntity
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN
 
 
 async def async_setup_entry(
